@@ -7,8 +7,7 @@ import seaborn as sns
 import tensorflow as tf
 from tensorflow.keras import layers, models, applications
 from sklearn.metrics import confusion_matrix, classification_report, roc_auc_score
-import medmnist
-from medmnist import INFO
+# medmnistのインポートは環境初期化後に実行するため、ここでは行わない
 
 # ==========================================
 # 0. 環境初期化（統合）
@@ -26,8 +25,16 @@ def initialize_environment():
     
     if IN_COLAB:
         print("[Status] Google Colab detected. Installing dependencies...")
-        # 必要なパッケージのインストール（MedMNISTなど）
-        subprocess.run(["pip", "install", "medmnist", "-q"], check=False)
+        # 必要なパッケージをまとめてインストール
+        subprocess.run([
+            "pip", "install", 
+            "medmnist", 
+            "tensorflow", 
+            "scikit-learn", 
+            "matplotlib", 
+            "seaborn",
+            "-q"
+        ], check=False)
     else:
         print("[Status] Local environment detected.")
 
@@ -62,10 +69,15 @@ def initialize_environment():
     print("--- Setup Complete ---\n")
 
 # 初回インポート時に自動実行（1回だけ）
+# 環境初期化を先に実行してから、medmnistをインポートする
 _environment_initialized = False
 if not _environment_initialized:
     initialize_environment()
     _environment_initialized = True
+
+# 環境初期化後にmedmnistをインポート
+import medmnist
+from medmnist import INFO
 
 # ==========================================
 # 1. データ管理ロジック
