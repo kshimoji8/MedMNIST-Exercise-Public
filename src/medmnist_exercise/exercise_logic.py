@@ -7,16 +7,14 @@ import seaborn as sns
 import tensorflow as tf
 from tensorflow.keras import layers, models, applications
 from sklearn.metrics import confusion_matrix, classification_report, roc_auc_score
-# medmnistのインポートは環境初期化後に実行するため、ここでは行わない
 
 # ==========================================
-# 0. 環境初期化（統合）
+# 0. 環境初期化
 # ==========================================
 def initialize_environment():
     """
     Colab/Local環境を自動判別し、必要なセットアップを完結させる。
-    各ノートブックの冒頭で call する。
-    この関数は明示的に呼び出すことも可能。
+    subprocess.run はコマンドの完了まで Python の処理をブロック（待機）します。
     """
     print("--- Environment Initializing ---")
     
@@ -25,7 +23,7 @@ def initialize_environment():
     
     if IN_COLAB:
         print("[Status] Google Colab detected. Installing dependencies...")
-        # 必要なパッケージをまとめてインストール
+        # check=True を指定することで、bashのwaitのように終了を確実に待ちます
         subprocess.run([
             "pip", "install", 
             "medmnist", 
@@ -34,24 +32,19 @@ def initialize_environment():
             "matplotlib", 
             "seaborn",
             "-q"
-        ], check=False)
+        ], check=True)
+        print("[Status] Installation finished.")
     else:
         print("[Status] Local environment detected.")
 
-    # 2. パスの自動設定 (medmnist_exercise パッケージを認識させる)
-    # ノートブックから見た src フォルダの場所を特定
+    # 2. パスの自動設定
     current_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in locals() else os.getcwd()
-    
-    # ノートブック(src/medmnist_exercise/)から見て 1つ上が src フォルダ
     src_path = os.path.abspath(os.path.join(current_dir, "../"))
     if src_path not in sys.path:
         sys.path.append(src_path)
-        print(f"[Path] Added to sys.path: {src_path}")
 
-    # 3. TensorFlow / GPU の設定 (RTX4080等のクラッシュ対策)
+    # 3. TensorFlow / GPU の設定
     try:
-        # TensorFlowは既にインポートされているが、設定はここで行う
-        # 不要な警告を抑止
         os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
         os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
         
@@ -68,16 +61,7 @@ def initialize_environment():
 
     print("--- Setup Complete ---\n")
 
-# 初回インポート時に自動実行（1回だけ）
-# 環境初期化を先に実行してから、medmnistをインポートする
-_environment_initialized = False
-if not _environment_initialized:
-    initialize_environment()
-    _environment_initialized = True
-
-# 環境初期化後にmedmnistをインポート
-import medmnist
-from medmnist import INFO
+# --- 修正: インポートエラーを防ぐため、トップレベルの medmnist インポートを削除しました ---
 
 # ==========================================
 # 1. データ管理ロジック
@@ -85,7 +69,12 @@ from medmnist import INFO
 def load_and_preprocess(data_flag='pathmnist', as_rgb=True):
     """
     MedMNISTデータをロードし、正規化と必要に応じた3チャンネル化を行う。
+    この関数内でインポートすることで、セットアップ完了を保証します。
     """
+    # 遅延インポート: initialize_environment() の後に実行されることを想定
+    import medmnist
+    from medmnist import INFO
+
     info = INFO[data_flag]
     DataClass = getattr(medmnist, info['python_class'])
 
@@ -147,7 +136,6 @@ def build_model(input_shape, num_classes, model_type='simple', multi_label=False
         model.add(layers.Dense(num_classes, activation='softmax'))
         loss = 'sparse_categorical_crossentropy'
 
-    # AUCを一旦外し、accuracyのみにする（エラー回避のため）
     model.compile(optimizer='adam', loss=loss, metrics=['accuracy'])
     return model
 
@@ -170,11 +158,9 @@ def show_evaluation_reports(model, x_test, y_test, labels_dict, multi_label=Fals
     y_pred_prob = model.predict(x_test)
     
     if multi_label:
-        # マルチラベル（Chest）の場合はAUC等を表示
         auc = roc_auc_score(y_test, y_pred_prob)
         print(f"Overall AUC Score: {auc:.4f}")
     else:
-        # シングルラベル（Path/Derma）の場合は混同行列
         y_pred = np.argmax(y_pred_prob, axis=1)
         y_true = y_test.flatten()
         
