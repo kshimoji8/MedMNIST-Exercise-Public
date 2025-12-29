@@ -163,6 +163,7 @@ def build_model(input_shape, num_classes, model_type='simple', multi_label=False
         model = models.Sequential(layers_list)
 
     model.compile(optimizer='adam', loss=loss, metrics=['accuracy'])
+    model.build(input_shape)
     return model
 
 # ==========================================
@@ -204,7 +205,7 @@ def show_evaluation_reports(model, x_test, y_test, labels_dict, multi_label=Fals
 # ==========================================
 def compute_gradcam(model, img_array, last_conv_layer_name):
     """Grad-CAMヒートマップの生成"""
-    grad_model = models.Model(model.inputs, [model.get_layer(last_conv_layer_name).output, model.output])
+    grad_model = models.Model(inputs=model.input, outputs=[model.get_layer(last_conv_layer_name).output, model.output])
 
     with tf.GradientTape() as tape:
         last_conv_layer_output, preds = grad_model(img_array)
