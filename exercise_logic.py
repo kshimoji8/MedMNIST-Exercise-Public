@@ -98,30 +98,19 @@ def load_and_preprocess(data_flag='pathmnist', as_rgb=True):
     y_train = train_dataset.labels.astype('float32')
     y_test = test_dataset.labels.astype('float32')
     
-    # ラベルの形状を確認して、シングルラベル（1列）かマルチラベル（2列以上）かを判定
-    # 2次元で列数が1より大きい場合はマルチラベル（ChestMNISTなど）
-    is_multi_label = (len(y_train.shape) == 2 and y_train.shape[1] > 1) or (info.get('task', '') == 'multi-label')
+    # ラベルの形状を確認
+    # 1次元の場合は2次元に変換してから判定
+    if len(y_train.shape) == 1:
+        y_train = y_train.reshape(-1, 1)
+    if len(y_test.shape) == 1:
+        y_test = y_test.reshape(-1, 1)
     
-    if is_multi_label:
-        # マルチラベルの場合：2次元配列を維持（サンプル数 x クラス数）
-        # 形状が既に2次元の場合はそのまま維持
-        if len(y_train.shape) == 1:
-            y_train = y_train.reshape(-1, 1)
-        if len(y_test.shape) == 1:
-            y_test = y_test.reshape(-1, 1)
-    else:
-        # シングルラベルの場合のみ：1次元にflatten
-        # ラベルが1列（シングルラベル）の場合のみ.flatten()を適用
-        if len(y_train.shape) > 1 and y_train.shape[1] == 1:
-            y_train = y_train.flatten()
-        elif len(y_train.shape) == 1:
-            # 既に1次元の場合はそのまま
-            pass
-        if len(y_test.shape) > 1 and y_test.shape[1] == 1:
-            y_test = y_test.flatten()
-        elif len(y_test.shape) == 1:
-            # 既に1次元の場合はそのまま
-            pass
+    # y_train.shape[1] == 1（シングルラベル）の場合のみ.flatten()を実行
+    # マルチラベル（2列以上）の場合は2次元の形状を維持
+    if y_train.shape[1] == 1:
+        y_train = y_train.flatten()
+    if y_test.shape[1] == 1:
+        y_test = y_test.flatten()
 
     return (x_train, y_train), (x_test, y_test), info
 
