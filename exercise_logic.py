@@ -64,9 +64,23 @@ def initialize_environment():
 # ==========================================
 # 1. データ管理ロジック
 # ==========================================
-def load_and_preprocess(data_flag='pathmnist', as_rgb=True):
+def load_and_preprocess(data_flag='pathmnist', as_rgb=True, binary_classification=False):
     """
     MedMNISTデータをロードし、正規化と必要に応じた3チャンネル化を行う。
+    
+    Parameters
+    ----------
+    data_flag : str
+        MedMNISTデータセット名（例: 'pathmnist', 'chestmnist'）
+    as_rgb : bool
+        3チャンネル化するかどうか
+    binary_classification : bool
+        Trueの場合、マルチラベルデータを2値分類（正常=0 vs 異常=1）に変換
+        
+    Returns
+    -------
+    tuple
+        ((x_train, y_train), (x_test, y_test), info)
     """
     import medmnist
     from medmnist import INFO
@@ -90,15 +104,35 @@ def load_and_preprocess(data_flag='pathmnist', as_rgb=True):
     y_train = train_dataset.labels.astype('float32')
     y_test = test_dataset.labels.astype('float32')
     
-    if len(y_train.shape) == 1:
-        y_train = y_train.reshape(-1, 1)
-    if len(y_test.shape) == 1:
-        y_test = y_test.reshape(-1, 1)
-    
-    if y_train.shape[1] == 1:
-        y_train = y_train.flatten()
-    if y_test.shape[1] == 1:
-        y_test = y_test.flatten()
+    # 2値分類モード: マルチラベルを「正常(0) vs 異常(1)」に変換
+    if binary_classification:
+        # 2次元配列の場合（マルチラベル）
+        if len(y_train.shape) == 2 and y_train.shape[1] > 1:
+            # いずれかのラベルが1なら異常(1)、全て0なら正常(0)
+            y_train = (y_train.sum(axis=1) > 0).astype('float32')
+            y_test = (y_test.sum(axis=1) > 0).astype('float32')
+            
+            # info を更新して2値分類用に変更
+            info = dict(info)  # コピーを作成
+            info['label'] = {'0': 'normal', '1': 'abnormal'}
+            info['n_classes'] = 2
+            
+            print(f"[Info] Converted to binary classification: Normal vs Abnormal")
+            print(f"  Training: {int((y_train == 0).sum())} normal, {int((y_train == 1).sum())} abnormal")
+            print(f"  Test: {int((y_test == 0).sum())} normal, {int((y_test == 1).sum())} abnormal")
+        else:
+            print("[Warning] binary_classification=True but data is not multi-label. Ignored.")
+    else:
+        # 通常の処理
+        if len(y_train.shape) == 1:
+            y_train = y_train.reshape(-1, 1)
+        if len(y_test.shape) == 1:
+            y_test = y_test.reshape(-1, 1)
+        
+        if y_train.shape[1] == 1:
+            y_train = y_train.flatten()
+        if y_test.shape[1] == 1:
+            y_test = y_test.flatten()
 
     return (x_train, y_train), (x_test, y_test), info
 
@@ -109,6 +143,17 @@ def load_and_preprocess(data_flag='pathmnist', as_rgb=True):
 def build_model(input_shape, num_classes, model_type='simple', multi_label=False):
     """
     指定されたタイプ（Simple CNN または Transfer Learning）のモデルを構築する。
+    
+    Parameters
+    ----------
+    input_shape : tuple
+        入力画像のshape（例: (28, 28, 3)）
+    num_classes : int
+        クラス数（2値分類の場合は1を指定）
+    model_type : str
+        'simple' または 'transfer'
+    multi_label : bool
+        マルチラベル分類かどうか（2値分類の場合もTrue）
     """
     if model_type == 'simple':
         layers_list = [
@@ -121,7 +166,8 @@ def build_model(input_shape, num_classes, model_type='simple', multi_label=False
             layers.Dense(64, activation='relu'),
             layers.Dropout(0.2)
         ]
-        if multi_label:
+        if multi_label or num_classes == 1:
+            # マルチラベルまたは2値分類
             layers_list.append(layers.Dense(num_classes, activation='sigmoid'))
             loss = 'binary_crossentropy'
         else:
@@ -139,7 +185,7 @@ def build_model(input_shape, num_classes, model_type='simple', multi_label=False
             layers.GlobalAveragePooling2D(),
             layers.Dropout(0.2)
         ]
-        if multi_label:
+        if multi_label or num_classes == 1:
             layers_list.append(layers.Dense(num_classes, activation='sigmoid'))
             loss = 'binary_crossentropy'
         else:
@@ -191,7 +237,7 @@ def show_evaluation_reports(model, x_test, y_test, labels_dict, multi_label=Fals
 # ==========================================
 # 4. Grad-CAM ロジック（Keras 3 対応版）
 # ==========================================
-def compute_gradcam(model, img_array, last_conv_layer_name='last_conv_layer'):
+def compute_gradcam(model, img_array, last_conv_layer_name='last_conv_layer', class_index=None):
     """
     Grad-CAMヒートマップを計算する。
     
@@ -206,6 +252,8 @@ def compute_gradcam(model, img_array, last_conv_layer_name='last_conv_layer'):
         入力画像（shape: (1, H, W, C)）
     last_conv_layer_name : str
         Grad-CAMを計算する畳み込み層の名前
+    class_index : int, optional
+        対象クラスのインデックス。Noneの場合は最も確率が高いクラス（または2値分類では出力そのもの）
         
     Returns
     -------
@@ -230,8 +278,16 @@ def compute_gradcam(model, img_array, last_conv_layer_name='last_conv_layer'):
     # 勾配を計算
     with tf.GradientTape() as tape:
         conv_out, preds = grad_model(img_array)
-        class_idx = tf.argmax(preds[0])
-        class_channel = preds[:, class_idx]
+        
+        # 2値分類（出力が1ユニット）の場合
+        if preds.shape[-1] == 1:
+            class_channel = preds[:, 0]
+        # 多クラス分類の場合
+        elif class_index is not None:
+            class_channel = preds[:, class_index]
+        else:
+            class_idx = tf.argmax(preds[0])
+            class_channel = preds[:, class_idx]
     
     grads = tape.gradient(class_channel, conv_out)
     pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
@@ -251,7 +307,8 @@ def compute_gradcam(model, img_array, last_conv_layer_name='last_conv_layer'):
 
 
 def show_gradcam(model, image, last_conv_layer_name='last_conv_layer', 
-                 title_original="Original Image", title_gradcam="Grad-CAM"):
+                 title_original="Original Image", title_gradcam="Grad-CAM",
+                 class_index=None):
     """
     Grad-CAMヒートマップを可視化する（高レベルAPI）。
     
@@ -267,6 +324,8 @@ def show_gradcam(model, image, last_conv_layer_name='last_conv_layer',
         元画像のタイトル
     title_gradcam : str
         Grad-CAM画像のタイトル
+    class_index : int, optional
+        対象クラスのインデックス
     
     Returns
     -------
@@ -280,7 +339,7 @@ def show_gradcam(model, image, last_conv_layer_name='last_conv_layer',
         img_array = image
     
     # ヒートマップ計算
-    heatmap = compute_gradcam(model, img_array, last_conv_layer_name)
+    heatmap = compute_gradcam(model, img_array, last_conv_layer_name, class_index)
     
     # 可視化
     plt.figure(figsize=(10, 5))
@@ -303,7 +362,7 @@ def show_gradcam(model, image, last_conv_layer_name='last_conv_layer',
 
 
 def show_gradcam_comparison(model, images, labels=None, last_conv_layer_name='last_conv_layer', 
-                            cols=4, figsize=None):
+                            cols=4, figsize=None, class_index=None):
     """
     複数画像のGrad-CAMを比較表示する。
     
@@ -321,6 +380,8 @@ def show_gradcam_comparison(model, images, labels=None, last_conv_layer_name='la
         1行あたりの列数
     figsize : tuple, optional
         図のサイズ
+    class_index : int, optional
+        対象クラスのインデックス
     
     Returns
     -------
@@ -340,7 +401,7 @@ def show_gradcam_comparison(model, images, labels=None, last_conv_layer_name='la
     
     for i, img in enumerate(images):
         img_array = img[np.newaxis, ...] if len(img.shape) == 3 else img
-        heatmap = compute_gradcam(model, img_array, last_conv_layer_name)
+        heatmap = compute_gradcam(model, img_array, last_conv_layer_name, class_index)
         heatmaps.append(heatmap)
         
         axes[i].imshow(img_array[0])
