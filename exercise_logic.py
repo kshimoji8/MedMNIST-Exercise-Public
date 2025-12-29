@@ -122,7 +122,7 @@ def build_model(input_shape, num_classes, model_type='simple', multi_label=False
     指定されたタイプ（Simple CNN または Transfer Learning）のモデルを構築する。
     """
     if model_type == 'simple':
-        model = models.Sequential([
+        layers_list = [
             layers.Input(shape=input_shape),
             layers.Conv2D(32, (3, 3), activation='relu'),
             layers.MaxPooling2D((2, 2)),
@@ -131,26 +131,36 @@ def build_model(input_shape, num_classes, model_type='simple', multi_label=False
             layers.Flatten(),
             layers.Dense(64, activation='relu'),
             layers.Dropout(0.2)
-        ])
+        ]
+        # 出力層の設定
+        if multi_label:
+            layers_list.append(layers.Dense(num_classes, activation='sigmoid'))
+            loss = 'binary_crossentropy'
+        else:
+            layers_list.append(layers.Dense(num_classes, activation='softmax'))
+            loss = 'sparse_categorical_crossentropy'
+        
+        model = models.Sequential(layers_list)
     else:
         # 転移学習（MobileNetV2）
         base_model = applications.MobileNetV2(input_shape=(32, 32, 3), include_top=False, weights='imagenet')
         base_model.trainable = False
-        model = models.Sequential([
+        layers_list = [
             layers.Input(shape=input_shape),
             layers.Resizing(32, 32),
             base_model,
             layers.GlobalAveragePooling2D(),
             layers.Dropout(0.2)
-        ])
-
-    # 出力層の設定
-    if multi_label:
-        model.add(layers.Dense(num_classes, activation='sigmoid'))
-        loss = 'binary_crossentropy'
-    else:
-        model.add(layers.Dense(num_classes, activation='softmax'))
-        loss = 'sparse_categorical_crossentropy'
+        ]
+        # 出力層の設定
+        if multi_label:
+            layers_list.append(layers.Dense(num_classes, activation='sigmoid'))
+            loss = 'binary_crossentropy'
+        else:
+            layers_list.append(layers.Dense(num_classes, activation='softmax'))
+            loss = 'sparse_categorical_crossentropy'
+        
+        model = models.Sequential(layers_list)
 
     model.compile(optimizer='adam', loss=loss, metrics=['accuracy'])
     return model
@@ -194,7 +204,7 @@ def show_evaluation_reports(model, x_test, y_test, labels_dict, multi_label=Fals
 # ==========================================
 def compute_gradcam(model, img_array, last_conv_layer_name):
     """Grad-CAMヒートマップの生成"""
-    grad_model = models.Model([model.inputs], [model.get_layer(last_conv_layer_name).output, model.output])
+    grad_model = models.Model(model.inputs, [model.get_layer(last_conv_layer_name).output, model.output])
 
     with tf.GradientTape() as tape:
         last_conv_layer_output, preds = grad_model(img_array)
