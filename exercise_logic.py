@@ -235,6 +235,183 @@ def show_evaluation_reports(model, x_test, y_test, labels_dict, multi_label=Fals
 
 
 # ==========================================
+# 3.5 特徴マップ可視化ロジック
+# ==========================================
+def visualize_feature_maps(model, image, layer_name=None, max_features=16):
+    """
+    CNNの中間層（特徴マップ）を可視化する。
+    
+    Parameters
+    ----------
+    model : keras.Model
+        学習済みのKerasモデル
+    image : np.ndarray
+        入力画像（shape: (H, W, C) または (1, H, W, C)）
+    layer_name : str, optional
+        可視化する層の名前。Noneの場合は最初の畳み込み層を使用
+    max_features : int
+        表示する特徴マップの最大数（デフォルト: 16）
+    
+    Returns
+    -------
+    np.ndarray
+        特徴マップの配列
+    """
+    # バッチ次元を追加
+    if len(image.shape) == 3:
+        img_array = image[np.newaxis, ...]
+    else:
+        img_array = image
+    
+    # 畳み込み層を探す
+    conv_layers = [layer for layer in model.layers if 'conv' in layer.name.lower()]
+    
+    if not conv_layers:
+        print("[警告] 畳み込み層が見つかりません。")
+        return None
+    
+    if layer_name is None:
+        target_layer = conv_layers[0]
+    else:
+        target_layer = model.get_layer(layer_name)
+    
+    # 中間出力を取得するモデルを構築
+    intermediate_model = tf.keras.Model(
+        inputs=model.input,
+        outputs=target_layer.output
+    )
+    
+    # 特徴マップを取得
+    feature_maps = intermediate_model.predict(img_array, verbose=0)
+    
+    # 可視化
+    n_features = min(feature_maps.shape[-1], max_features)
+    cols = 4
+    rows = (n_features + cols - 1) // cols
+    
+    fig, axes = plt.subplots(rows + 1, cols, figsize=(12, 3 * (rows + 1)))
+    axes = np.array(axes).flatten()
+    
+    # 元画像を最初に表示
+    axes[0].imshow(img_array[0])
+    axes[0].set_title('入力画像', fontsize=10)
+    axes[0].axis('off')
+    
+    # 残りの最初の行のセルを非表示
+    for i in range(1, cols):
+        axes[i].axis('off')
+    
+    # 特徴マップを表示
+    for i in range(n_features):
+        ax = axes[cols + i]
+        ax.imshow(feature_maps[0, :, :, i], cmap='viridis')
+        ax.set_title(f'特徴 {i+1}', fontsize=9)
+        ax.axis('off')
+    
+    # 余分なセルを非表示
+    for i in range(cols + n_features, len(axes)):
+        axes[i].axis('off')
+    
+    plt.suptitle(f'層「{target_layer.name}」の特徴マップ（{n_features}個表示）', fontsize=12)
+    plt.tight_layout()
+    plt.show()
+    
+    return feature_maps
+
+
+def visualize_cnn_flow(model, image, labels_dict=None):
+    """
+    CNNの処理の流れを可視化する（入力→特徴マップ→予測）。
+    
+    Parameters
+    ----------
+    model : keras.Model
+        学習済みのKerasモデル
+    image : np.ndarray
+        入力画像（shape: (H, W, C) または (1, H, W, C)）
+    labels_dict : dict, optional
+        ラベル名の辞書
+    
+    Returns
+    -------
+    None
+    """
+    # バッチ次元を追加
+    if len(image.shape) == 3:
+        img_array = image[np.newaxis, ...]
+    else:
+        img_array = image
+    
+    # 畳み込み層を探す
+    conv_layers = [layer for layer in model.layers if 'conv' in layer.name.lower()]
+    
+    if len(conv_layers) < 2:
+        print("[警告] 可視化には少なくとも2つの畳み込み層が必要です。")
+        return
+    
+    # 各畳み込み層の出力を取得
+    layer_outputs = []
+    for layer in conv_layers[:2]:  # 最初の2層のみ
+        intermediate_model = tf.keras.Model(
+            inputs=model.input,
+            outputs=layer.output
+        )
+        output = intermediate_model.predict(img_array, verbose=0)
+        layer_outputs.append((layer.name, output))
+    
+    # 予測を取得
+    prediction = model.predict(img_array, verbose=0)
+    
+    # 可視化
+    fig, axes = plt.subplots(1, 4, figsize=(16, 4))
+    
+    # 1. 入力画像
+    axes[0].imshow(img_array[0])
+    axes[0].set_title('① 入力画像', fontsize=11)
+    axes[0].axis('off')
+    
+    # 2. 第1畳み込み層の特徴マップ（代表的な4つを合成）
+    fm1 = layer_outputs[0][1]
+    fm1_combined = np.mean(fm1[0, :, :, :4], axis=-1)
+    axes[1].imshow(fm1_combined, cmap='viridis')
+    axes[1].set_title(f'② 第1層の特徴\n（{layer_outputs[0][0]}）', fontsize=11)
+    axes[1].axis('off')
+    
+    # 3. 第2畳み込み層の特徴マップ（代表的な4つを合成）
+    fm2 = layer_outputs[1][1]
+    fm2_combined = np.mean(fm2[0, :, :, :4], axis=-1)
+    axes[2].imshow(fm2_combined, cmap='viridis')
+    axes[2].set_title(f'③ 第2層の特徴\n（{layer_outputs[1][0]}）', fontsize=11)
+    axes[2].axis('off')
+    
+    # 4. 予測結果
+    if len(prediction.shape) == 1 or prediction.shape[-1] == 1:
+        # 二値分類
+        prob = float(prediction[0]) if len(prediction.shape) == 1 else float(prediction[0, 0])
+        result_text = f'異常確率: {prob:.1%}'
+    else:
+        # 多クラス分類
+        pred_class = np.argmax(prediction[0])
+        pred_prob = prediction[0, pred_class]
+        if labels_dict:
+            class_name = labels_dict.get(str(pred_class), f'クラス{pred_class}')
+        else:
+            class_name = f'クラス {pred_class}'
+        result_text = f'予測: {class_name}\n確信度: {pred_prob:.1%}'
+    
+    axes[3].text(0.5, 0.5, result_text, fontsize=14, ha='center', va='center',
+                 bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
+    axes[3].set_title('④ 予測結果', fontsize=11)
+    axes[3].axis('off')
+    axes[3].set_xlim(0, 1)
+    axes[3].set_ylim(0, 1)
+    
+    plt.suptitle('CNNの処理の流れ：入力 → 特徴抽出 → 予測', fontsize=13)
+    plt.tight_layout()
+    plt.show()
+
+
+# ==========================================
 # 4. Grad-CAM ロジック（Keras 3 対応版）
 # ==========================================
 def compute_gradcam(model, img_array, last_conv_layer_name='last_conv_layer', class_index=None):
