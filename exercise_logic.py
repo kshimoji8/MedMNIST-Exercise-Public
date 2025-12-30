@@ -14,7 +14,24 @@ from sklearn.metrics import confusion_matrix, classification_report, roc_auc_sco
 def initialize_environment():
     """
     Colab/Local環境を自動判別し、必要なセットアップを完結させる。
-    subprocess.run はコマンドの完了まで Python の処理をブロック（待機）します。
+    
+    【技術解説】
+    この関数は以下の3つの処理を行う：
+    
+    1. 環境判定: sys.modulesに'google.colab'が含まれているかで
+       Google Colab環境かローカル環境かを判別する。
+       
+    2. 依存関係のインストール: Colab環境の場合、pipで必要なライブラリを
+       インストールする。subprocess.runはコマンドの完了まで処理をブロック
+       （待機）するため、インストール完了後に次の処理に進む。
+       
+    3. GPU設定: TensorFlowのGPUメモリ成長（memory_growth）を有効化する。
+       これにより、必要な分だけGPUメモリを確保し、他のプロセスと
+       GPUを共有できるようになる。
+    
+    【補足】
+    TF_CPP_MIN_LOG_LEVEL='2': TensorFlowの警告メッセージを抑制
+    TF_ENABLE_ONEDNN_OPTS='0': oneDNN最適化を無効化（再現性のため）
     """
     print("--- 環境を初期化中 ---")
     
@@ -68,6 +85,22 @@ def load_and_preprocess(data_flag='pathmnist', as_rgb=True, binary_classificatio
     """
     MedMNISTデータをロードし、正規化と必要に応じた3チャンネル化を行う。
     
+    【技術解説】
+    1. データロード: MedMNISTライブラリからデータセットを取得する。
+       MedMNISTは医用画像を28×28ピクセルに標準化したデータセット群で、
+       病理画像（PathMNIST）、皮膚画像（DermaMNIST）、胸部X線（ChestMNIST）
+       など10種類以上のデータセットが含まれる。
+    
+    2. 正規化: ピクセル値を0-255から0-1の範囲に変換する（/255.0）。
+       ニューラルネットワークは入力値が小さい範囲にある方が学習が安定する。
+    
+    3. チャンネル変換: グレースケール画像（1チャンネル）を3チャンネルに
+       複製する。これは転移学習で使用するImageNet事前学習モデルが
+       RGB（3チャンネル）入力を期待しているため。
+    
+    4. 二値分類変換: ChestMNISTなどのマルチラベルデータを「正常vs異常」の
+       二値分類に変換する。いずれかの疾患ラベルが1なら「異常」とする。
+    
     Parameters
     ----------
     data_flag : str
@@ -81,6 +114,9 @@ def load_and_preprocess(data_flag='pathmnist', as_rgb=True, binary_classificatio
     -------
     tuple
         ((x_train, y_train), (x_test, y_test), info)
+        - x_train, x_test: 画像データ（float32, 0-1正規化済み）
+        - y_train, y_test: ラベルデータ
+        - info: データセットのメタ情報（ラベル名、クラス数など）
     """
     import medmnist
     from medmnist import INFO
@@ -144,6 +180,30 @@ def build_model(input_shape, num_classes, model_type='simple', multi_label=False
     """
     指定されたタイプ（Simple CNN または Transfer Learning）のモデルを構築する。
     
+    【技術解説】
+    'simple'モード（基本的なCNN）:
+    - Conv2D(32) → MaxPooling → Conv2D(64) → MaxPooling → Flatten → Dense(64) → 出力
+    - 畳み込み層（Conv2D）: 3×3のフィルタで局所的な特徴を抽出する。
+      活性化関数ReLU（Rectified Linear Unit）は負の値を0にし、
+      非線形性を導入することで複雑なパターンを学習可能にする。
+    - MaxPooling: 2×2領域の最大値を取り、空間解像度を半減させる。
+      位置の微小なずれに対するロバスト性を向上させる。
+    - Dropout(0.2): 学習時に20%のユニットをランダムに無効化し、
+      過学習を抑制する。
+    
+    'transfer'モード（転移学習）:
+    - MobileNetV2をベースモデルとして使用する。
+    - MobileNetV2はImageNet（1000クラス、約120万枚）で事前学習済みの
+      軽量モデルで、Depthwise Separable Convolutionにより
+      パラメータ数を抑えながら高精度を実現する。
+    - include_top=Falseで分類層を除外し、特徴抽出部分のみを使用する。
+    - base_model.trainable=Falseで事前学習済みの重みを固定する。
+    - GlobalAveragePooling2Dで空間次元を集約し、全結合層で分類する。
+    
+    【損失関数の選択】
+    - 多クラス分類: sparse_categorical_crossentropy（ラベルが整数の場合）
+    - 二値/マルチラベル分類: binary_crossentropy
+    
     Parameters
     ----------
     input_shape : tuple
@@ -151,9 +211,14 @@ def build_model(input_shape, num_classes, model_type='simple', multi_label=False
     num_classes : int
         クラス数（2値分類の場合は1を指定）
     model_type : str
-        'simple' または 'transfer'
+        'simple': 基本的なCNN、'transfer': MobileNetV2ベースの転移学習
     multi_label : bool
         マルチラベル分類かどうか（2値分類の場合もTrue）
+    
+    Returns
+    -------
+    keras.Model
+        コンパイル済みのKerasモデル（optimizer='adam', metrics=['accuracy']）
     """
     if model_type == 'simple':
         layers_list = [
@@ -202,7 +267,26 @@ def build_model(input_shape, num_classes, model_type='simple', multi_label=False
 # 3. 評価・可視化ロジック
 # ==========================================
 def plot_history(history):
-    """学習曲線の表示"""
+    """
+    学習曲線（損失と精度の推移）を表示する。
+    
+    【技術解説】
+    学習曲線は過学習の診断に重要な指標である：
+    - 訓練損失が下がり続け、検証損失も下がる → 正常な学習
+    - 訓練損失が下がるが、検証損失が上がり始める → 過学習の兆候
+    - 両方の損失が高いまま → 学習不足（underfitting）
+    
+    history.historyには以下のキーが含まれる：
+    - 'loss': 訓練データでの損失
+    - 'val_loss': 検証データでの損失
+    - 'accuracy': 訓練データでの精度
+    - 'val_accuracy': 検証データでの精度
+    
+    Parameters
+    ----------
+    history : keras.callbacks.History
+        model.fit()の戻り値
+    """
     plt.figure(figsize=(12, 4))
     for i, metrics in enumerate(['loss', 'accuracy']):
         plt.subplot(1, 2, i+1)
@@ -214,7 +298,36 @@ def plot_history(history):
 
 
 def show_evaluation_reports(model, x_test, y_test, labels_dict, multi_label=False):
-    """混同行列や精度指標を表示"""
+    """
+    混同行列や精度指標を表示する。
+    
+    【技術解説】
+    評価指標の意味：
+    - 混同行列: 実際のラベル（行）と予測ラベル（列）のクロス集計。
+      対角成分が正解数、非対角成分が誤分類数を示す。
+    - Precision（適合率）: 陽性と予測したもののうち、実際に陽性の割合
+    - Recall（再現率/感度）: 実際の陽性のうち、陽性と予測できた割合
+    - F1-score: PrecisionとRecallの調和平均
+    - AUC: ROC曲線下の面積。1に近いほど分類性能が高い。
+    
+    医療AIでは特にRecall（感度）が重要：
+    - 疾患の見逃し（偽陰性）は治療の遅れにつながる
+    - ただし、Recallを上げすぎると偽陽性が増え、
+      不要な検査や患者の不安につながる
+    
+    Parameters
+    ----------
+    model : keras.Model
+        学習済みモデル
+    x_test : np.ndarray
+        テスト画像
+    y_test : np.ndarray
+        テストラベル
+    labels_dict : dict
+        ラベル番号→ラベル名の辞書
+    multi_label : bool
+        マルチラベル分類の場合True（AUCのみ表示）
+    """
     y_pred_prob = model.predict(x_test)
     
     if multi_label:
@@ -441,7 +554,24 @@ def compute_gradcam(model, img_array, last_conv_layer_name='last_conv_layer', cl
     """
     Grad-CAMヒートマップを計算する。
     
-    【技術詳細】Keras 3 (TensorFlow 2.16+) では model.input への直接アクセスが
+    【技術解説】
+    Grad-CAM（Gradient-weighted Class Activation Mapping）は、CNNが
+    「画像のどの領域に注目して」分類を行ったかを可視化する手法である。
+    
+    アルゴリズム:
+    1. 対象クラスの出力を最後の畳み込み層の出力で微分（勾配を計算）
+    2. 各特徴マップに対する勾配の平均値を重みとして計算
+    3. 重み付き和でヒートマップを生成（Global Average Pooling的な処理）
+    4. ReLUを適用して負の値を除去（正の寄与のみを可視化）
+    5. 元画像サイズにリサイズ
+    
+    Grad-CAMの特徴:
+    - モデルの再学習が不要（任意の学習済みモデルに適用可能）
+    - 解像度は最後の畳み込み層のサイズに依存（粗い可視化）
+    - クラスごとに異なるヒートマップを生成可能
+    
+    【Keras 3対応】
+    Keras 3 (TensorFlow 2.16+) では model.input への直接アクセスが
     制限されているため、Functional APIで中間モデルを再構築している。
     
     Parameters
@@ -453,12 +583,12 @@ def compute_gradcam(model, img_array, last_conv_layer_name='last_conv_layer', cl
     last_conv_layer_name : str
         Grad-CAMを計算する畳み込み層の名前
     class_index : int, optional
-        対象クラスのインデックス。Noneの場合は最も確率が高いクラス（または2値分類では出力そのもの）
+        対象クラスのインデックス。Noneの場合は最も確率が高いクラス
         
     Returns
     -------
     np.ndarray
-        ヒートマップ（元画像と同じサイズ）
+        ヒートマップ（元画像と同じサイズ、0-1正規化済み）
     """
     # 入力テンソルを新規作成してFunctional APIで再構築
     inputs = tf.keras.Input(shape=img_array.shape[1:])
@@ -627,6 +757,23 @@ def create_gradio_app(model, info, data_flag):
     """
     学習済みモデルからGradio Webアプリを構築する。
     
+    【技術解説】
+    Gradioは機械学習モデルを簡単にWebアプリ化できるライブラリである。
+    
+    主な特徴:
+    - 数行のコードでインタラクティブなUIを構築可能
+    - share=Trueで一時的な公開URL（72時間有効）を発行できる
+    - 入力・出力のコンポーネントを柔軟にカスタマイズ可能
+    
+    内部処理:
+    1. gr.Interface: 入力→処理関数→出力のパイプラインを定義
+    2. predict関数: 画像を28×28にリサイズし、正規化後にモデルで推論
+    3. 出力は各クラスの確率を辞書形式で返す
+    
+    【注意点】
+    - 公開URLは誰でもアクセス可能なため、機密データには使用しない
+    - 医療目的での公開は規制（薬機法等）の確認が必要
+    
     Parameters
     ----------
     model : keras.Model
@@ -639,7 +786,7 @@ def create_gradio_app(model, info, data_flag):
     Returns
     -------
     gr.Interface
-        構築されたGradioインターフェース
+        構築されたGradioインターフェース（.launch()で起動可能）
     """
     import gradio as gr
     from PIL import Image
@@ -687,7 +834,18 @@ def create_gradio_app(model, info, data_flag):
 def create_sample_images(x_test, y_test, info, data_flag, n_samples=10):
     """
     テストデータからサンプル画像を作成し、ZIPファイルにまとめる。
-    各クラスから最低1枚を含むハイブリッドサンプリングを行う。
+    
+    【技術解説】
+    ハイブリッドサンプリング:
+    1. 各クラスから最低1枚を選択（全クラスが含まれることを保証）
+    2. 残りはランダムに選択（重複なし）
+    
+    この方式により、少数クラスもサンプルに含まれ、
+    Webアプリのテストで全クラスの動作を確認できる。
+    
+    ファイル命名規則:
+    - {連番}_{クラス名}.png
+    - 例: 01_adenocarcinoma.png, 02_normal.png
     
     Parameters
     ----------
@@ -705,7 +863,7 @@ def create_sample_images(x_test, y_test, info, data_flag, n_samples=10):
     Returns
     -------
     str
-        作成されたZIPファイルのパス
+        作成されたZIPファイルのパス（/tmp/{data_flag}_samples.zip）
     """
     from PIL import Image
     import zipfile
