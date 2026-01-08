@@ -922,5 +922,495 @@ def create_sample_images(x_test, y_test, info, data_flag, n_samples=10):
             zipf.write(filepath, os.path.basename(filepath))
     
     print(f"\n✓ サンプル画像を作成しました（{len(saved_files)}枚、各クラス最低1枚含む）")
-    
+
     return zip_path
+
+
+# ==========================================
+# 7. 評価指標・ROC曲線ロジック
+# ==========================================
+def plot_roc_curve(model, x_test, y_test, title="ROC Curve"):
+    """
+    ROC曲線を描画し、AUCと最適閾値を返す。
+
+    【技術解説】
+    ROC曲線（Receiver Operating Characteristic curve）は、二値分類器の
+    性能を閾値に依存しない形で評価するためのグラフである。
+
+    - X軸: 偽陽性率（FPR = 1 - 特異度）
+    - Y軸: 真陽性率（TPR = 感度）
+    - 対角線（点線）: ランダム分類器（AUC = 0.5）
+    - 左上に近いほど性能が良い
+
+    AUC（Area Under the Curve）は曲線下の面積で、0.5〜1.0の範囲を取る。
+    - AUC = 1.0: 完璧な分類
+    - AUC = 0.5: ランダム分類と同等
+    - AUC < 0.5: ランダムより悪い（ラベルが逆転している可能性）
+
+    【医療での解釈目安】
+    - 0.9-1.0: 非常に良い（Excellent）
+    - 0.8-0.9: 良い（Good）
+    - 0.7-0.8: まずまず（Fair）
+    - 0.6-0.7: 不十分（Poor）
+    - 0.5-0.6: 失敗（Fail）
+
+    Parameters
+    ----------
+    model : keras.Model
+        学習済みのKerasモデル（二値分類）
+    x_test : np.ndarray
+        テスト画像データ
+    y_test : np.ndarray
+        テストラベル（0または1）
+    title : str
+        グラフのタイトル
+
+    Returns
+    -------
+    dict
+        {
+            'auc': AUCスコア,
+            'fpr': 偽陽性率の配列,
+            'tpr': 真陽性率の配列,
+            'thresholds': 閾値の配列,
+            'optimal_threshold': Youden Indexに基づく最適閾値,
+            'optimal_point': (最適FPR, 最適TPR)
+        }
+    """
+    from sklearn.metrics import roc_curve, roc_auc_score
+
+    # 予測確率を取得
+    y_pred_prob = model.predict(x_test, verbose=0)
+
+    # 形状を調整（二値分類の場合）
+    if len(y_pred_prob.shape) > 1 and y_pred_prob.shape[1] == 1:
+        y_pred_prob = y_pred_prob.flatten()
+
+    y_true = y_test.flatten()
+
+    # ROC曲線の計算
+    fpr, tpr, thresholds = roc_curve(y_true, y_pred_prob)
+    auc_score = roc_auc_score(y_true, y_pred_prob)
+
+    # 最適閾値の計算（Youden Index: TPR - FPR の最大化）
+    youden_index = tpr - fpr
+    optimal_idx = np.argmax(youden_index)
+    optimal_threshold = thresholds[optimal_idx]
+    optimal_fpr = fpr[optimal_idx]
+    optimal_tpr = tpr[optimal_idx]
+
+    # 描画
+    plt.figure(figsize=(8, 8))
+
+    # ROC曲線
+    plt.plot(fpr, tpr, color='#2196F3', lw=2,
+             label=f'ROC Curve (AUC = {auc_score:.3f})')
+
+    # ランダム分類器の線
+    plt.plot([0, 1], [0, 1], color='gray', lw=1, linestyle='--',
+             label='Random Classifier (AUC = 0.5)')
+
+    # 最適点をプロット
+    plt.scatter([optimal_fpr], [optimal_tpr], color='#F44336', s=100,
+                zorder=5, label=f'Optimal Point (threshold={optimal_threshold:.3f})')
+
+    # 最適点から軸への補助線
+    plt.plot([optimal_fpr, optimal_fpr], [0, optimal_tpr],
+             color='#F44336', linestyle=':', alpha=0.5)
+    plt.plot([0, optimal_fpr], [optimal_tpr, optimal_tpr],
+             color='#F44336', linestyle=':', alpha=0.5)
+
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.xlabel('False Positive Rate (1 - Specificity)', fontsize=12)
+    plt.ylabel('True Positive Rate (Sensitivity)', fontsize=12)
+    plt.title(title, fontsize=14)
+    plt.legend(loc='lower right')
+    plt.grid(True, alpha=0.3)
+
+    # AUCの領域を塗りつぶし
+    plt.fill_between(fpr, tpr, alpha=0.1, color='#2196F3')
+
+    plt.tight_layout()
+    plt.show()
+
+    return {
+        'auc': auc_score,
+        'fpr': fpr,
+        'tpr': tpr,
+        'thresholds': thresholds,
+        'optimal_threshold': optimal_threshold,
+        'optimal_point': (optimal_fpr, optimal_tpr)
+    }
+
+
+def plot_precision_recall_curve(model, x_test, y_test, title="Precision-Recall Curve"):
+    """
+    Precision-Recall曲線を描画する。
+
+    【技術解説】
+    Precision-Recall曲線は、特にクラス不均衡がある場合にROC曲線よりも
+    有用な評価指標となることがある。
+
+    - Precision（適合率）: 陽性と予測したもののうち、実際に陽性の割合
+      → 「陽性予測の信頼性」を示す
+    - Recall（再現率/感度）: 実際の陽性のうち、陽性と予測できた割合
+      → 「陽性の取りこぼし」を示す
+
+    【ROC曲線との使い分け】
+    - ROC曲線: クラスバランスが取れている場合に適切
+    - PR曲線: 陽性クラスが少ない（不均衡）場合に適切
+
+    医療では「異常（陽性）」が少ないことが多いため、PR曲線が有用な場面が多い。
+
+    Parameters
+    ----------
+    model : keras.Model
+        学習済みのKerasモデル（二値分類）
+    x_test : np.ndarray
+        テスト画像データ
+    y_test : np.ndarray
+        テストラベル（0または1）
+    title : str
+        グラフのタイトル
+
+    Returns
+    -------
+    dict
+        {
+            'precision': Precisionの配列,
+            'recall': Recallの配列,
+            'thresholds': 閾値の配列,
+            'average_precision': Average Precision（PR曲線下の面積）
+        }
+    """
+    from sklearn.metrics import precision_recall_curve, average_precision_score
+
+    # 予測確率を取得
+    y_pred_prob = model.predict(x_test, verbose=0)
+
+    if len(y_pred_prob.shape) > 1 and y_pred_prob.shape[1] == 1:
+        y_pred_prob = y_pred_prob.flatten()
+
+    y_true = y_test.flatten()
+
+    # PR曲線の計算
+    precision, recall, thresholds = precision_recall_curve(y_true, y_pred_prob)
+    ap_score = average_precision_score(y_true, y_pred_prob)
+
+    # ベースライン（ランダム分類器）= 陽性クラスの割合
+    baseline = y_true.sum() / len(y_true)
+
+    # 描画
+    plt.figure(figsize=(8, 8))
+
+    # PR曲線
+    plt.plot(recall, precision, color='#4CAF50', lw=2,
+             label=f'PR Curve (AP = {ap_score:.3f})')
+
+    # ベースライン
+    plt.axhline(y=baseline, color='gray', linestyle='--',
+                label=f'Baseline (Prevalence = {baseline:.3f})')
+
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.xlabel('Recall (Sensitivity)', fontsize=12)
+    plt.ylabel('Precision (PPV)', fontsize=12)
+    plt.title(title, fontsize=14)
+    plt.legend(loc='lower left')
+    plt.grid(True, alpha=0.3)
+
+    plt.fill_between(recall, precision, alpha=0.1, color='#4CAF50')
+
+    plt.tight_layout()
+    plt.show()
+
+    return {
+        'precision': precision,
+        'recall': recall,
+        'thresholds': thresholds,
+        'average_precision': ap_score
+    }
+
+
+def find_optimal_threshold(model, x_test, y_test, strategy='youden',
+                           target_sensitivity=None, target_specificity=None):
+    """
+    指定された戦略に基づいて最適な判定閾値を探索する。
+
+    【技術解説】
+    閾値の選択は、誤分類のコストに基づいて行うべきである。
+
+    戦略の選択指針:
+    - 'youden': 感度と特異度のバランスを取りたい場合
+    - 'sensitivity': 見逃しを最小化したい場合（スクリーニング検査）
+    - 'specificity': 偽陽性を最小化したい場合（確定診断）
+    - 'f1': Precision/Recallのバランスを重視する場合
+
+    【医療での典型的な使い分け】
+    - スクリーニング: 高感度（見逃し防止）→ target_sensitivity=0.95
+    - 確定診断: 高特異度（誤診防止）→ target_specificity=0.95
+
+    Parameters
+    ----------
+    model : keras.Model
+        学習済みのKerasモデル
+    x_test : np.ndarray
+        テスト画像データ
+    y_test : np.ndarray
+        テストラベル
+    strategy : str
+        'youden': Youden Index最大化（デフォルト）
+        'sensitivity': 目標感度を達成する最小閾値
+        'specificity': 目標特異度を達成する最大閾値
+        'f1': F1スコア最大化
+    target_sensitivity : float, optional
+        strategy='sensitivity'の場合の目標感度（例: 0.95）
+    target_specificity : float, optional
+        strategy='specificity'の場合の目標特異度（例: 0.95）
+
+    Returns
+    -------
+    dict
+        {
+            'threshold': 最適閾値,
+            'sensitivity': その閾値での感度,
+            'specificity': その閾値での特異度,
+            'strategy': 使用した戦略
+        }
+    """
+    from sklearn.metrics import roc_curve
+
+    y_pred_prob = model.predict(x_test, verbose=0)
+    if len(y_pred_prob.shape) > 1 and y_pred_prob.shape[1] == 1:
+        y_pred_prob = y_pred_prob.flatten()
+    y_true = y_test.flatten()
+
+    fpr, tpr, thresholds = roc_curve(y_true, y_pred_prob)
+    specificity = 1 - fpr
+
+    if strategy == 'youden':
+        # Youden Index = TPR - FPR = 感度 + 特異度 - 1
+        youden = tpr - fpr
+        optimal_idx = np.argmax(youden)
+
+    elif strategy == 'sensitivity':
+        if target_sensitivity is None:
+            target_sensitivity = 0.95
+        # 目標感度以上を達成する閾値のうち、最も特異度が高いもの
+        valid_indices = np.where(tpr >= target_sensitivity)[0]
+        if len(valid_indices) == 0:
+            print(f"[警告] 感度 {target_sensitivity} を達成できません。最大感度の閾値を使用します。")
+            optimal_idx = np.argmax(tpr)
+        else:
+            # 特異度が最大のインデックスを選択
+            optimal_idx = valid_indices[np.argmax(specificity[valid_indices])]
+
+    elif strategy == 'specificity':
+        if target_specificity is None:
+            target_specificity = 0.95
+        # 目標特異度以上を達成する閾値のうち、最も感度が高いもの
+        valid_indices = np.where(specificity >= target_specificity)[0]
+        if len(valid_indices) == 0:
+            print(f"[警告] 特異度 {target_specificity} を達成できません。最大特異度の閾値を使用します。")
+            optimal_idx = np.argmax(specificity)
+        else:
+            # 感度が最大のインデックスを選択
+            optimal_idx = valid_indices[np.argmax(tpr[valid_indices])]
+
+    elif strategy == 'f1':
+        # F1スコアを各閾値で計算
+        precision = np.zeros_like(tpr)
+        for i in range(len(thresholds)):
+            tp = tpr[i] * y_true.sum()
+            fp = fpr[i] * (len(y_true) - y_true.sum())
+            if tp + fp > 0:
+                precision[i] = tp / (tp + fp)
+            else:
+                precision[i] = 0
+        f1 = 2 * (precision * tpr) / (precision + tpr + 1e-8)
+        optimal_idx = np.argmax(f1)
+    else:
+        raise ValueError(f"Unknown strategy: {strategy}")
+
+    optimal_threshold = thresholds[optimal_idx]
+    optimal_sensitivity = tpr[optimal_idx]
+    optimal_specificity = specificity[optimal_idx]
+
+    return {
+        'threshold': optimal_threshold,
+        'sensitivity': optimal_sensitivity,
+        'specificity': optimal_specificity,
+        'strategy': strategy
+    }
+
+
+def evaluate_at_threshold(model, x_test, y_test, threshold=0.5):
+    """
+    指定された閾値での全評価指標を計算・表示する。
+
+    【技術解説】
+    二値分類の評価指標:
+
+    混同行列から導出される指標:
+    - TP (True Positive): 正しく陽性と予測
+    - TN (True Negative): 正しく陰性と予測
+    - FP (False Positive): 誤って陽性と予測（偽陽性）
+    - FN (False Negative): 誤って陰性と予測（偽陰性）
+
+    基本指標:
+    - 感度 (Sensitivity) = TP / (TP + FN): 陽性を正しく検出する割合
+    - 特異度 (Specificity) = TN / (TN + FP): 陰性を正しく検出する割合
+    - 正解率 (Accuracy) = (TP + TN) / 全体
+    - 適合率 (Precision/PPV) = TP / (TP + FP)
+    - 陰性的中率 (NPV) = TN / (TN + FN)
+    - F1スコア = 2 * Precision * Recall / (Precision + Recall)
+
+    Parameters
+    ----------
+    model : keras.Model
+        学習済みのKerasモデル
+    x_test : np.ndarray
+        テスト画像データ
+    y_test : np.ndarray
+        テストラベル
+    threshold : float
+        判定閾値（デフォルト: 0.5）
+
+    Returns
+    -------
+    dict
+        全評価指標を含む辞書
+    """
+    from sklearn.metrics import confusion_matrix
+
+    y_pred_prob = model.predict(x_test, verbose=0)
+    if len(y_pred_prob.shape) > 1 and y_pred_prob.shape[1] == 1:
+        y_pred_prob = y_pred_prob.flatten()
+    y_true = y_test.flatten()
+
+    # 閾値で二値化
+    y_pred = (y_pred_prob >= threshold).astype(int)
+
+    # 混同行列
+    cm = confusion_matrix(y_true, y_pred)
+    tn, fp, fn, tp = cm.ravel()
+
+    # 各指標の計算
+    sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0
+    specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
+    accuracy = (tp + tn) / (tp + tn + fp + fn)
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+    npv = tn / (tn + fn) if (tn + fn) > 0 else 0
+    f1 = 2 * precision * sensitivity / (precision + sensitivity) if (precision + sensitivity) > 0 else 0
+    youden = sensitivity + specificity - 1
+
+    # 結果の表示
+    print("=" * 50)
+    print(f"評価結果（閾値 = {threshold:.3f}）")
+    print("=" * 50)
+    print()
+    print("【混同行列】")
+    print(f"                予測:陰性    予測:陽性")
+    print(f"  実際:正常      TN={tn:5d}    FP={fp:5d}")
+    print(f"  実際:異常      FN={fn:5d}    TP={tp:5d}")
+    print()
+    print("【評価指標】")
+    print(f"  感度 (Sensitivity/Recall) : {sensitivity:.4f}  ← 異常の検出率")
+    print(f"  特異度 (Specificity)      : {specificity:.4f}  ← 正常の正答率")
+    print(f"  正解率 (Accuracy)         : {accuracy:.4f}")
+    print(f"  適合率 (Precision/PPV)    : {precision:.4f}  ← 陽性予測の信頼度")
+    print(f"  陰性的中率 (NPV)          : {npv:.4f}  ← 陰性予測の信頼度")
+    print(f"  F1スコア                  : {f1:.4f}")
+    print(f"  Youden Index              : {youden:.4f}")
+    print("=" * 50)
+
+    # 混同行列の可視化
+    plt.figure(figsize=(6, 5))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                xticklabels=['Negative', 'Positive'],
+                yticklabels=['Normal', 'Abnormal'])
+    plt.title(f'Confusion Matrix (threshold={threshold:.3f})')
+    plt.xlabel('Predicted')
+    plt.ylabel('Actual')
+    plt.tight_layout()
+    plt.show()
+
+    return {
+        'threshold': threshold,
+        'confusion_matrix': cm,
+        'tp': tp, 'tn': tn, 'fp': fp, 'fn': fn,
+        'sensitivity': sensitivity,
+        'specificity': specificity,
+        'accuracy': accuracy,
+        'precision': precision,
+        'npv': npv,
+        'f1': f1,
+        'youden': youden
+    }
+
+
+def compare_thresholds(model, x_test, y_test, thresholds=[0.3, 0.5, 0.7]):
+    """
+    複数の閾値での評価指標を比較する。
+
+    【技術解説】
+    閾値の違いによる性能変化を一覧表示することで、
+    適切な閾値選択の判断材料を提供する。
+
+    Parameters
+    ----------
+    model : keras.Model
+        学習済みのKerasモデル
+    x_test : np.ndarray
+        テスト画像データ
+    y_test : np.ndarray
+        テストラベル
+    thresholds : list
+        比較する閾値のリスト
+
+    Returns
+    -------
+    list
+        各閾値での評価結果のリスト
+    """
+    from sklearn.metrics import confusion_matrix
+
+    y_pred_prob = model.predict(x_test, verbose=0)
+    if len(y_pred_prob.shape) > 1 and y_pred_prob.shape[1] == 1:
+        y_pred_prob = y_pred_prob.flatten()
+    y_true = y_test.flatten()
+
+    results = []
+
+    print("=" * 80)
+    print("閾値による評価指標の比較")
+    print("=" * 80)
+    print(f"{'閾値':^8} {'感度':^10} {'特異度':^10} {'正解率':^10} {'適合率':^10} {'F1':^10}")
+    print("-" * 80)
+
+    for thresh in thresholds:
+        y_pred = (y_pred_prob >= thresh).astype(int)
+        cm = confusion_matrix(y_true, y_pred)
+        tn, fp, fn, tp = cm.ravel()
+
+        sens = tp / (tp + fn) if (tp + fn) > 0 else 0
+        spec = tn / (tn + fp) if (tn + fp) > 0 else 0
+        acc = (tp + tn) / (tp + tn + fp + fn)
+        prec = tp / (tp + fp) if (tp + fp) > 0 else 0
+        f1 = 2 * prec * sens / (prec + sens) if (prec + sens) > 0 else 0
+
+        print(f"{thresh:^8.2f} {sens:^10.4f} {spec:^10.4f} {acc:^10.4f} {prec:^10.4f} {f1:^10.4f}")
+
+        results.append({
+            'threshold': thresh,
+            'sensitivity': sens,
+            'specificity': spec,
+            'accuracy': acc,
+            'precision': prec,
+            'f1': f1
+        })
+
+    print("=" * 80)
+
+    return results
