@@ -7,4 +7,5 @@ chapters:
   - file: 01_cnn
   - file: 02_transfer
   - file: 03_grad-cam
-  - file: 04_deploy
+  - file: 04_evaluation
+  - file: 05_deploy
