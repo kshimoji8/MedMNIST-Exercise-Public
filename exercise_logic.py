@@ -405,11 +405,6 @@ def visualize_feature_maps(model, image, layer_name=None, max_features=16):
         可視化する層の名前。Noneの場合は最初の畳み込み層を使用
     max_features : int
         表示する特徴マップの最大数（デフォルト: 16）
-    
-    Returns
-    -------
-    np.ndarray
-        特徴マップの配列
     """
     # バッチ次元を追加
     if len(image.shape) == 3:
@@ -479,8 +474,6 @@ def visualize_feature_maps(model, image, layer_name=None, max_features=16):
     plt.suptitle(f'Feature Maps from Layer "{target_layer.name}" ({n_features} shown)', fontsize=12)
     plt.tight_layout()
     plt.show()
-    
-    return feature_maps
 
 
 def visualize_cnn_flow(model, image, labels_dict=None):
