@@ -694,11 +694,6 @@ def show_gradcam(model, image, last_conv_layer_name='last_conv_layer',
         Grad-CAM画像のタイトル
     class_index : int, optional
         対象クラスのインデックス
-    
-    Returns
-    -------
-    np.ndarray
-        計算されたヒートマップ
     """
     # バッチ次元を追加
     if len(image.shape) == 3:
@@ -725,8 +720,6 @@ def show_gradcam(model, image, last_conv_layer_name='last_conv_layer',
     
     plt.tight_layout()
     plt.show()
-    
-    return heatmap
 
 
 def show_gradcam_comparison(model, images, labels=None, last_conv_layer_name='last_conv_layer', 
