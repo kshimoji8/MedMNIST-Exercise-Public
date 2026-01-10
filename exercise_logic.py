@@ -743,11 +743,6 @@ def show_gradcam_comparison(model, images, labels=None, last_conv_layer_name='la
         図のサイズ
     class_index : int, optional
         対象クラスのインデックス
-    
-    Returns
-    -------
-    list
-        計算されたヒートマップのリスト
     """
     n_images = len(images)
     rows = (n_images + cols - 1) // cols
@@ -777,8 +772,6 @@ def show_gradcam_comparison(model, images, labels=None, last_conv_layer_name='la
     
     plt.tight_layout()
     plt.show()
-    
-    return heatmaps
 
 
 # ==========================================
